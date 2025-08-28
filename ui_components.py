@@ -3,14 +3,52 @@ import pandas as pd
 import altair as alt
 
 def render_sidebar_settings():
-    """Render the sidebar with general settings"""
     st.sidebar.header("General Settings")
-    num_days = st.sidebar.number_input("Number of Days", min_value=1, value=10)
+
+    time_scale = st.sidebar.selectbox("Time Scale", ["Minutes", "Hours", "Days", "Weeks", "Months", "Years"], index=2,)
+    base_date = st.sidebar.date_input("Start Date", value=pd.to_datetime("2025-04-12").date())
+    start_date = pd.to_datetime(base_date)
+
+    if time_scale in ["Hours", "Minutes"]:
+        hour = st.sidebar.number_input("Hour", min_value=0, max_value=23, value=0)
+        start_date = start_date + pd.to_timedelta(hour, unit="h")
+
+    if time_scale == "Minutes":
+        minute = st.sidebar.number_input("Minute", min_value=0, max_value=59, value=0)
+        start_date = start_date + pd.to_timedelta(minute, unit="m")
+
+    # # Round to appropriate granularity
+    # if time_scale == "Minutes":
+    #     start_date = start_date.floor("T")
+    # elif time_scale == "Hours":
+    #     start_date = start_date.floor("H")
+    # elif time_scale == "Days":
+    #     start_date = start_date.floor("D")
+    # elif time_scale == "Weeks":
+    #     start_date = start_date.to_period("W").start_time
+    # elif time_scale == "Months":
+    #     start_date = start_date.to_period("M").start_time
+    # elif time_scale == "Years":
+    #     start_date = start_date.to_period("Y").start_time
+
+    num_times = st.sidebar.number_input(
+        f"Number of {time_scale.lower()}", min_value=1, value=10
+    )
     num_metrics = st.sidebar.number_input("Number of Base Metrics", min_value=1, value=1)
     num_calc = st.sidebar.number_input("Number of Calculated Metrics", min_value=0, value=1, step=1)
     seed = st.sidebar.number_input("Random Seed", value=42, step=1)
-    
-    return num_days, num_metrics, num_calc, seed
+
+    freq_map = {
+        "Minutes": "T",
+        "Hours": "H",
+        "Days": "D",
+        "Weeks": "W-MON",
+        "Months": "MS",
+        "Years": "YS",
+    }
+    frequency = freq_map[time_scale]
+
+    return start_date, frequency, num_times, num_metrics, num_calc, seed
 
 def render_base_metric_config(i, num_days):
     """Render configuration UI for a single base metric"""

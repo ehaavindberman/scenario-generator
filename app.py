@@ -23,14 +23,14 @@ def main():
     st.markdown("Generate realistic datasets with customizable base and calculated metrics.")
     
     # Sidebar settings
-    num_days, num_metrics, num_calc, seed = render_sidebar_settings()
-    
+    start_date, frequency, num_times, num_metrics, num_calc, seed = render_sidebar_settings()
+
     # Generate date range
-    base_date = pd.to_datetime("2025-05-13")
-    dates = pd.date_range(base_date, periods=num_days)
+    base_date = pd.Timestamp(start_date)
+    dates =  pd.date_range(base_date, periods=num_times, freq=frequency)
     
     # Initialize metric generator
-    generator = MetricGenerator(num_days, seed)
+    generator = MetricGenerator(num_times, seed)
     
     # --- Base Metrics Section ---
     st.header("📈 Base Metrics")
@@ -39,7 +39,7 @@ def main():
     base_metrics_configs = []
     
     for i in range(num_metrics):
-        config = render_base_metric_config(i, num_days)
+        config = render_base_metric_config(i, num_times)
         base_metrics_configs.append(config)
         
         # Generate the base metric
@@ -81,13 +81,13 @@ def main():
     
     if num_calc > 0:
         for i in range(num_calc):
-            config = render_calculated_metric_config(i, num_days, base_metrics.keys())
+            config = render_calculated_metric_config(i, num_times, base_metrics.keys())
             calc_metrics_configs.append(config)
         
         # Process calculated metrics
         try:
             processor = CalculatedMetricProcessor(base_metrics)
-            calculated_metrics = processor.process_calculated_metrics(calc_metrics_configs, num_days)
+            calculated_metrics = processor.process_calculated_metrics(calc_metrics_configs, num_times)
             
             # Plot calculated metrics
             for name, values in calculated_metrics.items():
