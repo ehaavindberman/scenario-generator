@@ -2,17 +2,18 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict, deque
 import re
+from typing import Dict, List, Any
 
 class MetricGenerator:
-    def __init__(self, num_days, seed=42):
-        self.num_days = num_days
+    def __init__(self, num_times, seed=42):
+        self.num_times = num_times
         self.seed = seed
         np.random.seed(seed)
         
     def generate_base_metric(self, name, breakpoints, params, randomness, integer=False):
         """Generate a base metric with piecewise linear segments"""
-        base_values = np.zeros(self.num_days)
-        noise = np.zeros(self.num_days)
+        base_values = np.zeros(self.num_times)
+        noise = np.zeros(self.num_times)
         
         for j, (start, end) in enumerate(zip(breakpoints[:-1], breakpoints[1:])):
             m, b = params[j]
@@ -26,22 +27,6 @@ class MetricGenerator:
             actual_values = base_values + noise
             
         return actual_values.astype(float)
-    
-    def generate_breakdown_segments(self, base_values, segment_names, weights, randomness):
-        """Generate breakdown segments for a base metric"""
-        weights = np.array(weights)
-        weights /= weights.sum()
-        proportions = np.random.dirichlet(
-            weights * (1.0 - randomness) + 1.0, 
-            size=self.num_days
-        )
-        
-        segments = {}
-        for j, seg_name in enumerate(segment_names):
-            seg_values = base_values * proportions[:, j]
-            segments[seg_name] = seg_values
-            
-        return segments
 
 class CalculatedMetricProcessor:
     def __init__(self, base_metrics):
@@ -78,12 +63,9 @@ class CalculatedMetricProcessor:
                     for dep in deps:
                         if dep != name:  # Avoid self-reference
                             # Only create dependency edges for OTHER calculated metrics
-                            # Base metrics are already computed, so they don't create dependencies
                             if dep in calc_metric_names:
                                 dep_graph[dep].append(name)
                                 in_degree[name] += 1
-                            # If dep is in base_metric_names, we don't increment in_degree
-                            # because base metrics are already available
         
         return dep_graph, in_degree, calc_by_name
     
@@ -91,26 +73,8 @@ class CalculatedMetricProcessor:
         """Perform topological sort to determine calculation order"""
         dep_graph, in_degree, calc_by_name = self.build_dependency_graph(calc_metrics)
         
-        # Debug information
-        print("Debug: Dependency analysis")
-        for metric in calc_metrics:
-            name = metric["name"]
-            formulas = [f for f in metric["formulas"] if f.strip()]
-            print(f"  {name}: formulas = {formulas}")
-            
-            for formula in formulas:
-                if formula.strip():
-                    base_names = set(self.base_metrics.keys())
-                    calc_names = {m["name"] for m in calc_metrics}
-                    deps = self.extract_dependencies(formula, base_names | calc_names)
-                    print(f"    '{formula}' -> deps: {deps}")
-            
-            print(f"    in_degree: {in_degree[name]}")
-        
         queue = deque([name for name in calc_by_name.keys() if in_degree[name] == 0])
         calc_order = []
-        
-        print(f"Debug: Starting queue: {list(queue)}")
         
         while queue:
             current = queue.popleft()
@@ -120,9 +84,6 @@ class CalculatedMetricProcessor:
                 if in_degree[neighbor] == 0:
                     queue.append(neighbor)
         
-        print(f"Debug: Final order: {calc_order}")
-        print(f"Debug: Expected count: {len(calc_metrics)}, Got count: {len(calc_order)}")
-        
         # Check for circular dependencies
         if len(calc_order) != len(calc_metrics):
             remaining = [name for name in calc_by_name.keys() if name not in calc_order]
@@ -131,23 +92,26 @@ class CalculatedMetricProcessor:
         
         return calc_order, calc_by_name
     
-    def evaluate_calculated_metric(self, metric, num_days):
+    def evaluate_calculated_metric(self, metric, num_times):
         """Evaluate a single calculated metric"""
-        result = np.zeros(num_days)
-        days = np.arange(num_days)
+        result = np.zeros(num_times)
+        times = np.arange(num_times)
         
         for j, (start, end) in enumerate(zip(metric["breakpoints"][:-1], metric["breakpoints"][1:])):
             formula = metric["formulas"][j]
             if formula.strip():
                 # Create a safe evaluation environment
-                safe_dict = {"np": np, "days": days}
+                safe_dict = {"np": np, "times": times, "days": times}  # Keep 'days' for backward compatibility
                 safe_dict.update(self.all_metrics)
                 
-                local_result = eval(formula, {"__builtins__": {}}, safe_dict)
-                if np.isscalar(local_result):
-                    result[start:end] = local_result
-                else:
-                    result[start:end] = local_result[start:end]
+                try:
+                    local_result = eval(formula, {"__builtins__": {}}, safe_dict)
+                    if np.isscalar(local_result):
+                        result[start:end] = local_result
+                    else:
+                        result[start:end] = local_result[start:end]
+                except Exception as e:
+                    raise ValueError(f"Error evaluating formula '{formula}': {e}")
             else:
                 result[start:end] = 0
         
@@ -162,7 +126,7 @@ class CalculatedMetricProcessor:
         
         return final_result
     
-    def process_calculated_metrics(self, calc_metrics, num_days):
+    def process_calculated_metrics(self, calc_metrics, num_times):
         """Process all calculated metrics in dependency order"""
         if not calc_metrics:
             return {}
@@ -173,10 +137,41 @@ class CalculatedMetricProcessor:
         for name in calc_order:
             metric = calc_by_name[name]
             try:
-                result = self.evaluate_calculated_metric(metric, num_days)
+                result = self.evaluate_calculated_metric(metric, num_times)
                 self.all_metrics[name] = result
                 calculated[name] = result
             except Exception as e:
                 raise ValueError(f"Error computing {name}: {e}")
         
         return calculated
+
+class BreakdownProcessor:
+    """Handles breakdown processing for both base and calculated metrics"""
+    
+    def __init__(self, breakdown_manager, seed=42):
+        self.breakdown_manager = breakdown_manager
+        self.seed = seed
+    
+    def apply_breakdowns_to_metrics(self, metrics_dict: Dict[str, np.ndarray], 
+                                  breakdown_configs: Dict[str, Dict]) -> Dict[str, np.ndarray]:
+        """Apply breakdowns to all specified metrics"""
+        result_metrics = metrics_dict.copy()
+        
+        for metric_name, values in metrics_dict.items():
+            if metric_name in breakdown_configs:
+                config = breakdown_configs[metric_name]
+                if config.get("enabled", False) and config.get("selected"):
+                    # Generate breakdown segments using the new structure
+                    segments = self.breakdown_manager.generate_breakdown_segments(
+                        values,
+                        config["selected"],  # This is now a dict of breakdown configs
+                        config.get("randomness", 0.1),
+                        self.seed
+                    )
+                    
+                    # Add segments to result with proper naming
+                    for segment_name, segment_values in segments.items():
+                        full_segment_name = f"{metric_name}_{segment_name}"
+                        result_metrics[full_segment_name] = segment_values
+        
+        return result_metrics
